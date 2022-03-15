@@ -1,28 +1,44 @@
-import asyncio
 import logging
+import datetime
 import requests
 from bs4 import BeautifulSoup
 
 import utils
-
 from user_session import UserSession
+from user import User, Week, Quarter
 from day import Day
-from lesson import Lesson
-from week import Week
+from lesson import Lesson, BaseLesson
 
+from enum import Enum
 
 logging.basicConfig(level=logging.INFO)
 
+
+# enum status code
+class eStatusCode(Enum):
+    NORMAL = 200
+    LOGIN_FAILED = 400
+    NOT_FOUND = 404
+    FORBIDDEN = 403
+
+
+quarters = [
+        '',
+        '/sp.I+четверть',
+        '/sp.II+четверть',
+        '/sp.III+четверть',
+        '/sp.IV+четверть',
+]
 
 class EduApi:
     def __init__(self):
         self._logger = logging.getLogger(__file__)
         self._user_sessions = {}
 
-    async def auth(self, username: str, password: str) -> list[UserSession, int]:
+    async def auth(self, username: str, password: str) -> User:
         """ Логинится в аккаунт (обязательно)
 
-            Возвращает массив [UserSession, status_code]
+            Возвращает User class
 
             Аргументы:
                 username: str -- Логин пользователя
@@ -68,9 +84,13 @@ class EduApi:
         #TODO: ссылаюсь к предыдущему                                     |#################|
         data['_xsrf'] = user_session.requests_session.cookies.get('_xsrf', domain="nnov0773")
 
+        # login
         response = user_session.requests_session.post(auth_url, data=data)
 
-        return [user_session, response.status_code]
+        if response.status_code != eStatusCode.NORMAL.value:
+            self._logger.error(f'user::{username} - не удалось войти в аккаунт (не правильный логин или пароль)')
+
+        return User(username, self)
 
     async def new_user_session(self, username: str, password: str):
         """ Псевдоним для auth
@@ -82,7 +102,7 @@ class EduApi:
 
         await self.auth(username, password)
 
-    async def get_user_session(self, username: str) -> UserSession:
+    def get_user_session(self, username: str) -> UserSession:
         """ Возвращает сессию пользователя
 
             Возвращает None если такой сессии не существует
@@ -96,6 +116,15 @@ class EduApi:
 
         return self._user_sessions[username]
 
+    def get_user(self, username) -> User:
+        """ Получение объекта пользователя
+
+            Аргументы:
+                username: str -- Логин пользователя
+        """
+
+        return User(username, self)
+
     async def get_user_week(self, username: str, offset: int=0) -> Week:
         """ Данные о учебной неделе пользователя
 
@@ -107,7 +136,7 @@ class EduApi:
                         и т.д (неограниченное смещение) : (по умолчанию 0)
         """
 
-        user_session = await self.get_user_session(username)
+        user_session = self.get_user_session(username)
 
         week_url = f'https://edu.gounn.ru/journal-app/u.1547/week.{offset}'
 
@@ -167,7 +196,7 @@ class EduApi:
                     lesson_task = lesson_hometask.find_all('div', class_=LESSON_TASK_CLASS)
 
                     for task in lesson_task:
-                        current_lesson.task += utils.normalize_string(task.text) + '\n'
+                        current_lesson.task += utils.normalize_string(task.text) + ' '
 
                 
                 lesson_marks = lesson.find('div', class_=LESSON_MARK_CLASS)
@@ -177,13 +206,102 @@ class EduApi:
 
                     lesson_marks_value = lesson_marks_value.get('value')
 
-                    lesson_marks_value = utils.normalize_string(lesson_marks_value)
+                    lesson_marks_value = utils.normalize_marks(lesson_marks_value)
+
+                    for mark in lesson_marks_value:
+                        current_lesson.marks.append(mark)
 
                 current_day.lessons.append(current_lesson)
             
             week[current_day.title] = current_day
 
+        # для сообщения между классами
+        week['eduApiObject'] = self
+        week['username'] = username
+
         return Week(week)
+
+    async def get_current_user_day(self, username: str) -> Day:
+        """ Возвращает объект текущего дня недели
+
+            Аргументы:
+                username: str -- Логин пользователя
+        """
+
+        week = await self.get_user_week(username, 0)
+
+        for day in week:
+            # В class day хранится date в формате 00.00 (day, month)
+            current_datetime = datetime.datetime.strptime(day.date, "%d.%m")
+
+            # Если дни совпали
+            if current_datetime.day == datetime.datetime.now().day:
+                return day
+
+    async def get_user_quarter(self, username: str, quarter: int=0) -> Quarter:
+        """ Возвращает оценки за текущую четверть (class Quarter)
+        
+            Аргументы:
+                username: str -- Логин пользователя
+                quarter: int -- Номер четверти (от 1 до 4) * [0 это текущая четверть]
+        """
+
+        quarter_url = f'https://edu.gounn.ru/journal-student-grades-action/u.1547{quarters[quarter]}'
+
+        user_session = self.get_user_session(username)
+
+        response = user_session.requests_session.get(url=quarter_url, data=user_session.data)
+
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        lessons = {}
+
+        LESSON_NAME_CLASS   = 'text-overflow lhCell offset16'
+        MARKS_COLUMN_CLASS  = 'cells_marks'
+        MARK_CLASS          = 'cell'
+        MARK_DATA_CLASS     =  MARK_CLASS + '-data'
+        QUARTER_CLASS       = 'navigation-tabs-label add-context'
+
+        # сначала формирую словарь названий предметов
+        for lesson in soup.find_all('div', class_=LESSON_NAME_CLASS):
+            if not lessons.get(lesson.text):
+                lessons[lesson.text] = BaseLesson()
+
+        for lesson_column in soup.find_all('div', class_=MARKS_COLUMN_CLASS):
+            for mark_y in lesson_column.find_all('div', class_=MARK_CLASS):
+                lesson_name = mark_y.get('name')
+
+                if not lesson_name:
+                    continue
+
+                if not lessons.get(lesson_name):
+                    lessons[lesson_name] = BaseLesson()
+
+                lessons[lesson_name].title = lesson_name
+
+                mark = mark_y.find('div', class_=MARK_DATA_CLASS)
+
+                mark = mark.text
+
+                # удаляю пустые клетки
+                mark = mark.replace(u'\xa0', u'')
+
+                if mark and mark != '':
+                    marks = utils.normalize_marks(mark)
+
+                    for mark in marks:
+                        lessons[lesson_name].marks.append(mark)
+
+        quarter_name = soup.find('span', class_=QUARTER_CLASS).text
+
+        return Quarter(list(lessons.values()), quarter_name) 
+
+    async def get_current_quarter(self) -> Quarter:
+        """ Возвращает объект текущей четверти """
+
+        quarter = await self.get_user_quarter(self.username, 0)
+
+        return quarter
 
     async def logout(self, username: str):
         """ Удаление сессии пользователя
@@ -199,17 +317,3 @@ class EduApi:
 
         del self._user_sessions[username]
 
-
-"""
-async def main():
-    api = EduApi()
-
-    await api.auth('username', 'password')
-    week = await api.get_user_week('username')
-
-
-loop = asyncio.get_event_loop()
-task = loop.create_task(main())
-
-loop.run_until_complete(task)
-"""

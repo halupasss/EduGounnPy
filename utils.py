@@ -17,7 +17,7 @@ def normalize_string(source: str) -> str:
     return source
 
 
-def normalize_marks(marks: str) -> list[int]:
+def normalize_marks(marks: str) -> list:
     """ Приводит оценки в нормальный вид
 
         Удаляет все лишние символы
@@ -33,7 +33,7 @@ def normalize_marks(marks: str) -> list[int]:
     result_marks = []
 
     for letter in marks:
-        if letter.isdigit() or letter in ['Н']:
+        if letter.isdigit() and letter != '/':
             result_marks.append(int(letter))
 
     return marks
