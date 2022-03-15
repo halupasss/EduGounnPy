@@ -1,13 +1,8 @@
 import asyncio
-<<<<<<< HEAD
-=======
-
->>>>>>> 6e945e0ebf703caa98e63688e4481368ea1bbd8a
 from eduapi import EduApi
 
 
 async def main():
-<<<<<<< HEAD
     # различные примеры по применению
     api = EduApi()
 
@@ -48,14 +43,4 @@ async def main():
 loop = asyncio.get_event_loop()
 task = loop.create_task(main())
 
-=======
-    api = EduApi()
-    
-    await api.auth('username', 'password')
-    week = await api.get_user_week('username')
-    
-
-loop = asyncio.get_event_loop()
-task = loop.create_task(main())
->>>>>>> 6e945e0ebf703caa98e63688e4481368ea1bbd8a
 loop.run_until_complete(task)
