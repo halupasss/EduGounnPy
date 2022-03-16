@@ -1,6 +1,5 @@
 import json
 import logging
-from operator import le
 import requests
 
 
